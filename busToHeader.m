@@ -110,11 +110,7 @@ function [busObject, busName] = getBusObject(busName, busInfo)
         elseif isa(busInfo, 'Simulink.ModelWorkspace')
             busObject = getVariable(busInfo, busName);
         else
-            try
-                busObject = dictionaryFun('getEntryValue', busInfo, busName);
-            catch
-                error('Bad busName / busInfo combination');
-            end
+            error('Bad busName / busInfo combination');
         end
     end
 end
