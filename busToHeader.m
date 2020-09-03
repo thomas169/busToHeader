@@ -1,4 +1,4 @@
-function busToHeader(busName, headerPath, busInfo, pragmas)
+function busToHeader(busName, headerPath, busInfo, pragmas, sort)
 % *************************************************************************
 % File:         <a href="matlab:amp('busToHeader.m')">busToHeader.m</a>
 %
@@ -32,23 +32,49 @@ function busToHeader(busName, headerPath, busInfo, pragmas)
 %                   without packing for generated code to match simulink on
 %                   a 64 bit machine.
 %
-% Useage:       busToHeader('busName', 'busDefinitions.h', 'base', [])
-%               busToHeader(busObject, 'busDefinitions.h', 'myBusName', [])
+% Useage:       busToHeader('busName', 'busDefs.h', 'base', [], 0)
+%               busToHeader(busObject, 'busDefs.h', 'myBusName', [], 0)
+%               busToHeader([], 'busDefs.h', [], [], 1) % sorts
 %
 % Revisions:    1.00 01/09/20 (tf) first release
+%
+% See also:     busToHeader
 %
 % SPDX-License-Identifier: Apache-2.0
 % *************************************************************************
 
 %% busToHeader
 
-assert(nargin == 4, 'Function needs 4 inputs, the last may be empty');
-pragmas = getPragmas(pragmas);
+assert(nargin >= 3, 'Function needs 3 of 5 args, last two are optional');
+sortOnly = false;
+if nargin >= 4
+    pragmas = getPragmas(pragmas);
+else
+    pragmas = '';
+end
+if nargin >=5 
+    sortHeader = sort;
+    if sortHeader && isempty(busName) && isempty(busInfo)
+        sortOnly = true;
+    end
+else
+    sortHeader = false;
+end
+
 [~, headerName, headerExt] = fileparts(headerPath);
 defName = upper(matlab.lang.makeValidName([headerName headerExt]));
-[busObject, busName] = getBusObject(busName, busInfo);
+
+if sortOnly 
+    headerContent = readFileAndRemoveGuards(headerPath, defName);
+    busList = getBusDefinitions(headerContent);
+    busList = sortTypedefs(busList);
+    writeHeaderFile(busList, headerPath, defName);
+    return
+end
+
 busList = [];
 busIndex = 1;
+[busObject, busName] = getBusObject(busName, busInfo);
 busData = generateBusDefinition(busObject, busName, pragmas);
 busPreable = generateBusPreamble(busName);
 
@@ -59,7 +85,9 @@ if (exist(headerPath, 'file') == 2)
     busIndex = find(ismember({busList.Name}, busName));
     if any(busIndex)
         if strcmp(busList(busIndex).Data, busData)
-            return 
+            if ~sortHeader
+                return
+            end
         else
             warning(['Bus defintion for "%s" exists in file, but '...
                 'objects differs so editing header file.'], busName);
@@ -73,19 +101,27 @@ busList(busIndex).Name = busName;
 busList(busIndex).Comment = busPreable;
 busList(busIndex).Data = busData;
 
-% Write the actual file here
-fileStr = generateFilePreamble();
-fileStr = [fileStr openHeaderGuards(defName)];
-fileStr = [fileStr addHeaderIncludes()];
-for n = 1 : numel(busList)
-    fileStr = [fileStr writeBusInfo(busList(n))];
+if sortHeader 
+    busList = sortTypedefs(busList);
 end
-fileStr = [fileStr closeHeaderGuards(defName)];
 
-fid = fopen(headerPath,'w');
-fprintf(fid,'%s',fileStr);
-fclose(fid);
+writeHeaderFile(busList, headerPath, defName);
 
+end
+
+function writeHeaderFile(busList, headerPath, defName)
+    % Write the actual file here
+    fileStr = generateFilePreamble();
+    fileStr = [fileStr openHeaderGuards(defName)];
+    fileStr = [fileStr addHeaderIncludes()];
+    for n = 1 : numel(busList)
+        fileStr = [fileStr writeBusInfo(busList(n))];
+    end
+    fileStr = [fileStr closeHeaderGuards()];
+
+    fid = fopen(headerPath,'w');
+    fprintf(fid,'%s',fileStr);
+    fclose(fid);
 end
 
 function pragmas = getPragmas(pragmas)
@@ -110,7 +146,11 @@ function [busObject, busName] = getBusObject(busName, busInfo)
         elseif isa(busInfo, 'Simulink.ModelWorkspace')
             busObject = getVariable(busInfo, busName);
         else
-            error('Bad busName / busInfo combination');
+            try
+                busObject = dictionaryFun('getEntryValue', busInfo, busName);
+            catch
+                error('Bad busName / busInfo combination');
+            end
         end
     end
 end
@@ -135,8 +175,8 @@ function str = writeBusInfo(busInfo)
     str = sprintf('%s%s', busInfo.Comment, busInfo.Data);
 end
 
-function str = closeHeaderGuards(defName)
-    str = sprintf('#endif _%s_', defName);
+function str = closeHeaderGuards()
+    str = sprintf('#endif');
 end
 
 function opType = compiledTypeName(ipType)
@@ -175,7 +215,7 @@ end
 function fileBody = readFileAndRemoveGuards(fileName, defName) 
     fileContent = fileread(fileName);
     startDefs = sprintf('^#ifndef _%s_\n#define _%s_\n\n', defName, defName);
-    endDefs = sprintf('#endif _%s_$', defName);
+    endDefs = sprintf('#endif');
     fileBody = regexprep(fileContent, {startDefs, endDefs}, '');
 end
 
@@ -198,4 +238,57 @@ function busInfo = getBusDefinitions(busses)
         busInfo(n).Comment = busComments{n};
         busInfo(n).Data = busDefs{n};
     end
+end
+
+function dependancyMatrix = generateDependancyMatrix(busList)
+    N = numel(busList);
+    dependancyMatrix = false(N);
+    for n = 1 : N
+        types = regexp(busList(n).Data,'\w+(?=\s\w+;\n)','match');
+        customTypes = getCustomTypeRequirements(types);
+        dependancyMatrix(n,:) = ismember({busList.Name}, customTypes);
+    end
+end
+
+function sortedIdx = sortDependancyMatrix(dependancyMatrix)
+    N = size(dependancyMatrix,1);
+    sortedIdx = 1 : N;
+    n = 1;
+    while (n < N)
+        for m = n : N
+            if dependancyMatrix(n,m)
+                dependancyMatrix = swapMatrixMirrorA(dependancyMatrix, m, n);
+                sortedIdx = swapVectorRows(sortedIdx, m, n);
+                n = 0;
+                break;
+            end
+        end
+        n = n + 1;
+    end
+end
+
+function item = swapMatrixMirrorA(item, idxA, idxB)
+    N = size(item,1);
+    idx = 1 : N;
+    idx(idxA) = idxB;
+    idx(idxB) = idxA;
+    item = item(idx, idx);
+end
+
+function item = swapVectorRows(item, idxA, idxB)
+    tmp = item(idxA);
+    item(idxA) = item(idxB);
+    item(idxB) = tmp;
+end
+
+function busList = sortTypedefs(busListIn)
+    dependancyMatrix = generateDependancyMatrix(busListIn);
+    sortedIdx = sortDependancyMatrix(dependancyMatrix);
+    busList = busListIn(sortedIdx);
+end
+
+function customTypes = getCustomTypeRequirements(types)
+    cType = {'real_T', 'real32_T', 'uint32_T', 'int32_T', 'uint16_T',...
+        'int16_T', 'uint8_T', 'int8_T', 'boolean_T'};
+    customTypes = unique(types(~ismember(types,cType)));
 end
