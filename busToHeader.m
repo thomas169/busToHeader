@@ -166,8 +166,7 @@ function str = openHeaderGuards(defName)
 end
 
 function str = addHeaderIncludes()
-    % this may be somewhere else on windows / mac
-    tmwTypes = fullfile(matlabroot,'extern','include','tmwtypes.h');
+    tmwTypes = 'tmwtypes.h';
     str = sprintf('#include "%s"\n\n', tmwTypes);
 end
 
