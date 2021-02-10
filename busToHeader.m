@@ -66,9 +66,11 @@ defName = upper(matlab.lang.makeValidName([headerName headerExt]));
 
 if sortOnly 
     headerContent = readFileAndRemoveGuards(headerPath, defName);
-    busList = getBusDefinitions(headerContent);
-    busList = sortTypedefs(busList);
-    writeHeaderFile(busList, headerPath, defName);
+    busListFile = getBusDefinitions(headerContent);
+    busList = sortTypedefs(busListFile);
+    if ~isequal(busListFile, busList)
+        writeHeaderFile(busList, headerPath, defName);
+    end
     return
 end
 
@@ -89,8 +91,8 @@ if (exist(headerPath, 'file') == 2)
                 return
             end
         else
-            warning(['Bus defintion for "%s" exists in file, but '...
-                'objects differs so editing header file.'], busName);
+            warning(['Bus defintion for "%s" already exists in file, but '...
+                'objects differs, so updateing header file.'], busName);
         end
     else 
         busIndex = numel(busList) + 1;
@@ -203,7 +205,11 @@ function busData = generateBusDefinition(busObject, busName, pragmas)
             busData = [busData sprintf('\t%s %s[%d];\n',type, name, count)];
         end
     end
-    busData = [busData sprintf('} %s %s;\n\n', pragmas, busName)];
+    if isempty(pragmas)
+        busData = [busData sprintf('} %s;\n\n', busName)];
+    else
+         busData = [busData sprintf('} %s %s;\n\n', pragmas, busName)];
+    end
 end %#ok<*AGROW>
 
 function busPreamble = generateBusPreamble(busName)
